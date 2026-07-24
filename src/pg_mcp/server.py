@@ -8,7 +8,7 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP(
     "pg-mcp-server",
-    description="Read-only PostgreSQL tools for AI agents",
+    instructions="Read-only PostgreSQL tools for AI agents",
 )
 
 PG_CONFIG = {

@@ -1,5 +1,7 @@
 -- Bookstore seed data for pg-mcp-server
 
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 BEGIN;
 
 -- Tables
@@ -89,6 +91,3 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_readonly;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO mcp_readonly;
 
 COMMIT;
-
--- Enable trigram extension for fuzzy search (must be outside transaction)
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
