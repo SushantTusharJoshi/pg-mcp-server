@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import atexit
+import asyncio
 import os
 import re
 
@@ -223,6 +225,28 @@ async def search_books(
         )
 
     return f"Found {len(rows)} result{'s' if len(rows) != 1 else ''}:\n\n" + "\n\n".join(lines)
+
+
+async def close_pool():
+    global _pool
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+
+
+def _shutdown_pool():
+    if _pool is not None:
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(close_pool())
+            else:
+                loop.run_until_complete(close_pool())
+        except RuntimeError:
+            pass
+
+
+atexit.register(_shutdown_pool)
 
 
 def main():
