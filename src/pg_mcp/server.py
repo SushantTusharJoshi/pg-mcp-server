@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import atexit
 import asyncio
+import atexit
 import os
 import re
 
