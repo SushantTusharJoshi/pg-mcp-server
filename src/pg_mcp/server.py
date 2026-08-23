@@ -174,7 +174,8 @@ async def search_books(
         limit: Maximum number of results (default 10, max 50).
     """
     limit = min(max(1, limit), 50)
-    pattern = f"%{search_term}%"
+    escaped = search_term.replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
 
     conditions = [
         "(b.title ILIKE $1 OR a.name ILIKE $1 OR g.name ILIKE $1)"
