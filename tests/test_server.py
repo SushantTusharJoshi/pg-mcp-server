@@ -1,8 +1,8 @@
 """Tests for pg-mcp server utilities."""
 
+import os
 import re
 import sys
-import os
 
 # Add the src directory to the path so we can import server components
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
