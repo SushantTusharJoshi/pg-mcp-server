@@ -21,10 +21,11 @@ An MCP server that gives AI agents safe, read-only access to a PostgreSQL databa
 ### 1. Start Postgres
 
 ```bash
+cp .env.example .env   # then set POSTGRES_PASSWORD
 docker compose up -d
 ```
 
-This starts Postgres 16 with the bookstore schema and 20 sample books. A read-only database role (`mcp_readonly`) is created automatically.
+This starts Postgres 16 with the bookstore schema and 20 sample books. A read-only database role (`mcp_readonly`) is created automatically. The port is bound to `127.0.0.1` only, so the database is not reachable from other machines on your network.
 
 ### 2. Install the server
 

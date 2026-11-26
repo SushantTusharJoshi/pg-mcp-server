@@ -4,9 +4,10 @@ services:
     environment:
       POSTGRES_DB: bookstore
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (cp .env.example .env)}
     ports:
-      - "5432:5432"
+      # Bound to loopback so the database is not reachable from other machines on the network
+      - "127.0.0.1:${PG_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./seed/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
