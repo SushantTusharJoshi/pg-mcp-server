@@ -402,7 +402,15 @@ atexit.register(_shutdown_pool)
 
 
 def main():
-    mcp.run(transport="stdio")
+    transport = os.getenv("PG_MCP_TRANSPORT", "stdio")
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    elif transport == "http":
+        from pg_mcp.http_app import run_http
+
+        run_http(mcp)
+    else:
+        raise SystemExit("PG_MCP_TRANSPORT must be 'stdio' or 'http'")
 
 
 if __name__ == "__main__":
