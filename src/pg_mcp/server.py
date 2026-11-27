@@ -114,6 +114,10 @@ async def inspect_schema(table_name: str | None = None) -> str:
         return "\n".join(lines)
 
 
+# -- query -------------------------------------------------------------------
+# What it does: runs one agent-written SELECT and returns at most ROW_LIMIT rows.
+# Catch it:     "How do you let an agent query a database without letting it write?"
+# Card:         docs/cards/query.md
 @mcp.tool()
 async def query(sql: str, params: list[str | int | float | bool | None] | None = None) -> str:
     """Execute a read-only SQL query against the database.
@@ -128,30 +132,46 @@ async def query(sql: str, params: list[str | int | float | bool | None] | None =
              Use $1, $2, ... for parameter placeholders.
         params: Optional list of parameter values matching the $N placeholders.
     """
+    # DECISION: a write keyword anywhere -> refuse before touching the database
     if BLOCKED_KEYWORDS.search(sql):
         return "Error: only SELECT queries are allowed. DDL/DML statements are blocked."
 
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # STEP: read-only transaction + timeout, so Postgres itself rejects writes and long runs
         async with conn.transaction(readonly=True):
             await conn.execute(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}")
 
-            limited_sql = f"SELECT * FROM ({sql}) AS _q LIMIT {ROW_LIMIT}"
-            rows = await conn.fetch(limited_sql, *(params or []))
+            # LOOP: read from a cursor and stop at the cap; the agent's SQL is never
+            # wrapped in a string, so a trailing comment cannot remove the limit
+            rows = []
+            truncated = False
+            async for row in conn.cursor(sql, *(params or []), prefetch=ROW_LIMIT + 1):
+                if len(rows) == ROW_LIMIT:
+                    truncated = True
+                    break
+                rows.append(row)
 
-            if not rows:
-                return "Query returned no rows."
+    # DECISION: nothing came back
+    if not rows:
+        return "Query returned no rows."
 
-            columns = list(rows[0].keys())
-            lines = ["\t".join(columns)]
-            for row in rows:
-                lines.append("\t".join(str(v) for v in row.values()))
+    # RETURN: tab-separated table + row-count footer
+    return _format_rows(rows, truncated)
 
-            footer = f"\n({len(rows)} row{'s' if len(rows) != 1 else ''})"
-            if len(rows) == ROW_LIMIT:
-                footer += f" [truncated at {ROW_LIMIT} row limit]"
-            lines.append(footer)
-            return "\n".join(lines)
+
+def _format_rows(rows: list, truncated: bool) -> str:
+    """Render rows as a tab-separated table with a row-count footer."""
+    columns = list(rows[0].keys())
+    lines = ["\t".join(columns)]
+    for row in rows:
+        lines.append("\t".join(str(v) for v in row.values()))
+
+    footer = f"\n({len(rows)} row{'s' if len(rows) != 1 else ''})"
+    if truncated:
+        footer += f" [truncated at {ROW_LIMIT} row limit]"
+    lines.append(footer)
+    return "\n".join(lines)
 
 
 @mcp.tool()

@@ -1,6 +1,6 @@
 # pg-mcp-server
 
-An MCP server that gives AI agents safe, read-only access to a PostgreSQL database. Ships with a Docker Compose setup and seed data so you can try it in under five minutes.
+An MCP server that gives AI agents safe, read-only access to a PostgreSQL database. Ships with a Docker Compose setup and seed data so you can try it locally.
 
 ## Architecture
 
@@ -11,7 +11,7 @@ An MCP server that gives AI agents safe, read-only access to a PostgreSQL databa
 | Tool | Purpose |
 |---|---|
 | `inspect_schema` | List all tables (with row counts), or describe a single table's columns, types, and constraints |
-| `query` | Run a parameterized read-only SELECT query with row limits and statement timeouts |
+| `query` | Run one read-only SELECT (values bound as `$1`, `$2`, ...) with a row cap and a statement timeout |
 | `search_books` | Search books by title, author, or genre with optional rating and stock filters |
 
 ## Quick start
@@ -149,13 +149,23 @@ Agent calls: query(sql="SELECT g.name, round(avg(b.price), 2) AS avg_price, coun
 
 ## Security model
 
-The `query` tool enforces read-only access through five independent layers:
+Read-only is enforced by Postgres itself, so it does not depend on the agent behaving. The `query` tool puts these layers around every call:
 
-1. **Keyword blocklist** — rejects SQL containing INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, REVOKE, COPY, or EXECUTE before it reaches the database
-2. **Parameterized queries** — all user-supplied values go through asyncpg's parameter binding, preventing SQL injection
-3. **Read-only transaction** — the query runs inside `BEGIN READ ONLY`, so Postgres itself rejects any mutation attempt
-4. **Statement timeout** — queries exceeding the configured timeout (default 5s) are killed by Postgres
-5. **Dedicated read-only role** — the `mcp_readonly` database user only has SELECT privileges; even if other layers fail, Postgres denies writes
+1. **Keyword blocklist**: SQL containing INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, REVOKE, COPY or EXECUTE is refused before it reaches the database. It is an early refusal, not the security boundary.
+2. **Read-only transaction**: the query runs inside `BEGIN READ ONLY`, so Postgres rejects any write.
+3. **Dedicated role**: `mcp_readonly` only has SELECT on the bookstore tables, and `seed/init.sql` revokes `pg_terminate_backend`, `pg_cancel_backend` and `pg_notify` from PUBLIC so the role cannot end other sessions or send messages.
+4. **Statement timeout**: queries running longer than `STATEMENT_TIMEOUT_MS` (default 5s) are cancelled by Postgres.
+5. **Row cap**: rows are read from a cursor and reading stops at `QUERY_ROW_LIMIT`. The agent's SQL is never wrapped in a string, so a trailing comment cannot lift the cap.
+
+Values passed in `params` are bound by asyncpg. The SQL text itself is written by the agent, which is why layers 2 to 5 exist.
+
+### Residual risks
+
+- The blocklist is a regular expression, not a SQL parser; layers 2 to 5 are what hold.
+- Output is capped by rows, not bytes, so very wide rows can still produce a large response.
+- In stdio mode the only identity check is the local operating-system user.
+- The revokes live in `seed/init.sql`, which only runs on a fresh volume. After upgrading, run `docker compose down -v` once.
+- Not tested against Amazon RDS.
 
 ## Teardown
 

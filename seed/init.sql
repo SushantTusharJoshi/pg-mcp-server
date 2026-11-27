@@ -90,4 +90,12 @@ GRANT USAGE ON SCHEMA public TO mcp_readonly;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_readonly;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO mcp_readonly;
 
+-- Read-only is a property of the role, so close the side channels too.
+-- Without these, mcp_readonly could end other sessions of the same role
+-- or send messages through LISTEN/NOTIFY from inside a read-only transaction.
+-- Superusers are unaffected; this demo database does not use LISTEN/NOTIFY.
+REVOKE EXECUTE ON FUNCTION pg_catalog.pg_terminate_backend(integer, bigint) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION pg_catalog.pg_cancel_backend(integer) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION pg_catalog.pg_notify(text, text) FROM PUBLIC;
+
 COMMIT;
