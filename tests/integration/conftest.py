@@ -3,6 +3,9 @@
 These tests run only when PG_MCP_INTEGRATION=1. The server connects with the
 usual PG_* settings (as mcp_readonly); setup and state checks use
 PG_ADMIN_DSN, a superuser connection to the same bookstore database.
+
+PG_MCP_INTEGRATION=clinic runs only the tests marked clinic, against a
+database seeded from seed/sample_clinic.sql (generic mode, PG-F6).
 """
 
 from __future__ import annotations
@@ -17,12 +20,15 @@ from pg_mcp import server
 
 
 def pytest_collection_modifyitems(config, items):
-    if os.getenv("PG_MCP_INTEGRATION") == "1":
-        return
-    skip = pytest.mark.skip(reason="set PG_MCP_INTEGRATION=1 and point PG_* at a seeded database")
+    mode = os.getenv("PG_MCP_INTEGRATION")
     for item in items:
-        if "integration" in item.keywords:
-            item.add_marker(skip)
+        if "integration" not in item.keywords:
+            continue
+        clinic = "clinic" in item.keywords
+        if (mode == "1" and not clinic) or (mode == "clinic" and clinic):
+            continue
+        sample = "PG_MCP_INTEGRATION=clinic and the clinic" if clinic else "PG_MCP_INTEGRATION=1 and the bookstore"
+        item.add_marker(pytest.mark.skip(reason=f"set {sample} database in PG_*"))
 
 
 ADMIN_DSN = os.getenv("PG_ADMIN_DSN", "postgresql://postgres:postgres@localhost:5432/bookstore")

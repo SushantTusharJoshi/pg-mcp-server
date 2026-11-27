@@ -1,6 +1,6 @@
 # pg-mcp-server
 
-Read-only PostgreSQL access for AI agents, enforced by the database. An MCP server with three tools: inspect the schema, run one SELECT, search books ([server.py](src/pg_mcp/server.py)). The agent writes its own SQL, so the read-only guarantee lives in Postgres (a read-only transaction and a role that can only SELECT three tables, [seed/init.sql](seed/init.sql)), with Python checks in front that refuse early and explain why ([sql_guard.py](src/pg_mcp/sql_guard.py)). Ships with Docker Compose and seed data ([docker-compose.yml](docker-compose.yml)).
+Read-only PostgreSQL access for AI agents, enforced by the database. An MCP server with two generic tools that work on any Postgres you point it at through environment variables (inspect the schema, run one SELECT), plus a bookstore demo tool (search books) that `PG_MCP_BOOKSTORE_TOOLS=0` turns off ([server.py](src/pg_mcp/server.py)). The agent writes its own SQL, so the read-only guarantee lives in Postgres (a read-only transaction and a role that can only SELECT three tables, [seed/init.sql](seed/init.sql)), with Python checks in front that refuse early and explain why ([sql_guard.py](src/pg_mcp/sql_guard.py)). Ships with Docker Compose and seed data ([docker-compose.yml](docker-compose.yml)).
 
 CI on `main`: lint, unit tests, and the integration suite against a real `postgres:16` all pass ([run 46032659838](https://github.com/SushantTusharJoshi/pg-mcp-server/actions/runs/46032659838), [ci.yml](.github/workflows/ci.yml)).
 
@@ -23,7 +23,7 @@ flowchart TB
 
     tools --> q["query(sql, params)"]
     tools --> schema["inspect_schema()<br/>fixed catalog SQL, table name bound as $1"]
-    tools --> search["search_books()<br/>fixed SQL with placeholders,<br/>LIKE wildcards escaped, limit clamped"]
+    tools --> search["search_books(), only when PG_MCP_BOOKSTORE_TOOLS is on<br/>server.py build_mcp()<br/>fixed SQL with placeholders,<br/>LIKE wildcards escaped, limit clamped"]
 
     q --> kw{"Keyword blocklist<br/>server.py BLOCKED_KEYWORDS"}
     kw -- "match" --> refuse["Refusal text<br/>server.py _Call.refuse"]
@@ -37,7 +37,7 @@ flowchart TB
     schema --> pool
     search --> pool
 
-    pg[("PostgreSQL 16, role mcp_readonly<br/>seed/init.sql: GRANT SELECT on authors, genres, books<br/>REVOKE TEMPORARY, REVOKE EXECUTE on<br/>pg_terminate_backend, pg_cancel_backend, pg_notify, ...")]
+    pg[("PostgreSQL 16, role mcp_readonly<br/>seed/init.sql: GRANT SELECT on authors, genres, books<br/>(or any database and read-only role set by PG_*)<br/>REVOKE TEMPORARY, REVOKE EXECUTE on<br/>pg_terminate_backend, pg_cancel_backend, pg_notify, ...")]
     pool --> pg
 
     pg --> fence["Untrusted-data fence + byte cap<br/>output.py untrusted_block()<br/>random block id per response"]
@@ -54,11 +54,14 @@ flowchart TB
   subgraph ci["CI: .github/workflows/ci.yml, every push to main and pull request"]
     direction TB
     lint["lint: ruff check src/ tests/"]
-    unit["test: pytest -m 'not integration'<br/>tests/test_sql_guard.py, test_server.py, test_output.py,<br/>test_audit.py, test_http_auth.py, test_query_cap.py, test_config.py"]
+    unit["test: pytest -m 'not integration'<br/>tests/test_sql_guard.py, test_server.py, test_output.py,<br/>test_audit.py, test_http_auth.py, test_query_cap.py, test_config.py,<br/>test_generic_mode.py"]
     svc[("postgres:16 service container")]
     seed["psql -f seed/init.sql"]
     integ["integration: pytest tests/integration<br/>test_containment.py runs the corpus in tests/sql_corpus.py<br/>test_privileges.py checks the GRANTs and REVOKEs"]
+    clinicseed["psql -f seed/sample_clinic.sql<br/>into a second database, clinic"]
+    generic["generic mode: PG_MCP_INTEGRATION=clinic, PG_MCP_BOOKSTORE_TOOLS=0<br/>test_generic_clinic.py: same layers on another schema,<br/>real MCP stdio client"]
     svc --> seed --> integ
+    svc --> clinicseed --> generic
   end
 ```
 
@@ -68,7 +71,7 @@ flowchart TB
 |---|---|---|
 | `inspect_schema` | List the tables the role can see (with row counts), or describe one table's columns, types and constraints | [server.py `inspect_schema`](src/pg_mcp/server.py) |
 | `query` | Run one read-only SELECT (values bound as `$1`, `$2`, ...) with a row cap, a byte cap and a statement timeout | [server.py `query`](src/pg_mcp/server.py) |
-| `search_books` | Search books by title, author or genre with optional rating and stock filters | [server.py `search_books`](src/pg_mcp/server.py) |
+| `search_books` | Bookstore demo only: search books by title, author or genre with optional rating and stock filters. Registered when `PG_MCP_BOOKSTORE_TOOLS` is on (the default); off, it is absent from `tools/list` | [server.py `search_books`, `build_mcp`](src/pg_mcp/server.py) |
 
 Everything that comes from the database is returned between a fixed `<<< UNTRUSTED DATABASE DATA` header line and a matching end line, so the agent can tell rows from instructions ([output.py](src/pg_mcp/output.py), [tests/test_output.py](tests/test_output.py)).
 
@@ -127,15 +130,16 @@ Read-only is a property of the database role and the transaction, so it does not
 | sqlglot parse | [sql_guard.py `check_sql`](src/pg_mcp/sql_guard.py) | More than one statement, anything but SELECT / WITH ... SELECT, data-modifying CTEs, `SELECT INTO`, `FOR UPDATE`, side-effect and dynamic-SQL functions, unparseable SQL | [tests/test_sql_guard.py](tests/test_sql_guard.py) |
 | `BEGIN READ ONLY` | [server.py `query`](src/pg_mcp/server.py) | Every write, including ones hidden from the first two layers | [test_containment.py `test_database_alone_rejects`](tests/integration/test_containment.py) |
 | Role `mcp_readonly` | [seed/init.sql](seed/init.sql) | Tables outside `authors`, `genres`, `books`; sequences; `CREATE`/`TEMP`; `pg_terminate_backend`, `pg_cancel_backend`, `pg_notify`, `pg_logical_emit_message`; inherited roles | [tests/integration/test_privileges.py](tests/integration/test_privileges.py) |
+| Role `clinic_readonly` (generic mode) | [seed/sample_clinic.sql](seed/sample_clinic.sql) | The same grants and revokes on a second schema; the ungranted `billing_notes` is unreadable and unlisted | [tests/integration/test_generic_clinic.py](tests/integration/test_generic_clinic.py) |
 | Statement timeout | [server.py `query`](src/pg_mcp/server.py) | Long-running queries (`pg_sleep`) | [test_containment.py `test_pg_sleep_is_cancelled_by_statement_timeout`](tests/integration/test_containment.py) |
 | Row cap and byte cap | [server.py `query`](src/pg_mcp/server.py), [output.py](src/pg_mcp/output.py) | Huge results, `LIMIT ALL`, trailing `--`, wide rows | [test_containment.py `test_limit_bypass_attempts_stay_capped`](tests/integration/test_containment.py), [tests/test_query_cap.py](tests/test_query_cap.py), [tests/test_output.py](tests/test_output.py) |
 | Untrusted-data fence | [output.py `untrusted_block`](src/pg_mcp/output.py) | Database text passing as instructions; a row faking the end of the block | [test_output.py `test_a_row_cannot_close_the_fence`](tests/test_output.py) |
 | Audit log | [audit.py](src/pg_mcp/audit.py) | Calls without a record; values leaking into the record | [tests/test_audit.py](tests/test_audit.py) |
 | HTTP bearer tokens | [auth.py `BearerAuthMiddleware`](src/pg_mcp/auth.py) | Unauthenticated requests (401), tools outside a token's list (403) | [tests/test_http_auth.py](tests/test_http_auth.py) |
 
-The SQL containment corpus ([tests/sql_corpus.py](tests/sql_corpus.py)) runs in CI against a real `postgres:16` service container seeded from `seed/init.sql` (`integration` job in [ci.yml](.github/workflows/ci.yml)); the job fails if any case gets through.
+The SQL containment corpus ([tests/sql_corpus.py](tests/sql_corpus.py)) runs in CI against a real `postgres:16` service container seeded from `seed/init.sql` (`integration` job in [ci.yml](.github/workflows/ci.yml)); the job fails if any case gets through. The same job then loads [seed/sample_clinic.sql](seed/sample_clinic.sql) into a second database and runs [test_generic_clinic.py](tests/integration/test_generic_clinic.py) in generic mode: write refusals, the read-only transaction, the role's grants and revokes, the timeout, both caps and the audit record, on a schema the code has never seen.
 
-Residual risks, in short: the agent can read every row of the three granted tables; the fence is a label, not enforcement; one huge value is built in memory before the byte cap trims it; there is no rate limit; HTTP tokens are static; in stdio mode the only identity is the local OS user; Amazon RDS is untested. The full threat model, the Nov 4 audit findings and their status, and how to report a vulnerability are in [SECURITY.md](SECURITY.md).
+Residual risks, in short: the agent can read every row of the granted tables; the fence is a label, not enforcement; one huge value is built in memory before the byte cap trims it; there is no rate limit; HTTP tokens are static; in stdio mode the only identity is the local OS user; Amazon RDS is untested. The full threat model, the Nov 4 audit findings and their status, and how to report a vulnerability are in [SECURITY.md](SECURITY.md).
 
 ## Modes
 
@@ -174,6 +178,8 @@ export PG_MCP_TOKENS="{\"analyst\": {\"sha256\": \"$HASH\", \"tools\": [\"query\
 python -m pg_mcp.server
 ```
 
+In generic mode (`PG_MCP_BOOKSTORE_TOOLS=0`) list only `query` and `inspect_schema`: a token naming `search_books` is an unknown tool, and the server refuses to start ([test_generic_mode.py `test_http_token_naming_an_unregistered_tool_fails_at_startup`](tests/test_generic_mode.py)).
+
 Each point below has a test in [tests/test_http_auth.py](tests/test_http_auth.py):
 
 - Missing or wrong token: `401` (`test_missing_token_is_401`, `test_wrong_token_is_401`). A `tools/call` for a tool outside the token's list: `403` (`test_disallowed_tool_is_403`, `test_batch_with_a_disallowed_tool_is_403`).
@@ -204,6 +210,21 @@ python -m pg_mcp.server       # stdio; or try it with: mcp dev src/pg_mcp/server
 
 `seed/init.sql` runs only on a fresh volume ([docker-compose.yml](docker-compose.yml) mounts it into `docker-entrypoint-initdb.d`). After pulling changes to it, run `docker compose down -v` once. Teardown: `docker compose down -v`.
 
+### Generic mode: any Postgres
+
+`inspect_schema` and `query` assume no schema, so the server works on any database you name in `PG_*` (or the libpq `PGHOST`, `PGDATABASE`, ...). Set `PG_MCP_BOOKSTORE_TOOLS=0` so `search_books`, which only fits the bookstore tables, is not registered. Connect as a role you created for this: `LOGIN`, `SELECT` on the tables the agent may read, nothing else. [seed/sample_clinic.sql](seed/sample_clinic.sql) is a template: per-table `GRANT SELECT`, no `ON ALL TABLES`, `REVOKE TEMPORARY`, and the side-channel `REVOKE EXECUTE`s, which must be run in each database because function privileges are per database.
+
+To try it on the second sample schema (synthetic clinic data: clinicians, patients, appointments, plus an ungranted `billing_notes`), on the same Docker Postgres:
+
+```bash
+docker compose exec -T postgres createdb -U postgres clinic
+docker compose exec -T postgres psql -U postgres -d clinic -v ON_ERROR_STOP=1 < seed/sample_clinic.sql
+PG_DATABASE=clinic PG_USER=clinic_readonly PG_PASSWORD=clinic_readonly PG_MCP_BOOKSTORE_TOOLS=0 \
+  python -m pg_mcp.server     # tools/list: inspect_schema, query
+```
+
+`inspect_schema()` then lists `appointments (10 rows)`, `clinicians (4 rows)`, `patients (6 rows)`; `billing_notes` is not listed and `query` on it fails with `42501` (permission denied). CI runs exactly this configuration through a real MCP stdio client ([test_generic_clinic.py `test_quick_start_over_stdio`](tests/integration/test_generic_clinic.py)).
+
 Tests (the same commands CI runs, [ci.yml](.github/workflows/ci.yml)):
 
 ```bash
@@ -211,15 +232,19 @@ pip install -e ".[dev]"
 python -m pytest -m "not integration"                      # unit tests, no database
 PG_MCP_INTEGRATION=1 PG_ADMIN_DSN=postgresql://postgres:$POSTGRES_PASSWORD@localhost:5432/bookstore \
   python -m pytest tests/integration                        # against the seeded Docker database
+PG_MCP_INTEGRATION=clinic PG_MCP_BOOKSTORE_TOOLS=0 PG_DATABASE=clinic PG_USER=clinic_readonly \
+  PG_PASSWORD=clinic_readonly PG_ADMIN_DSN=postgresql://postgres:$POSTGRES_PASSWORD@localhost:5432/clinic \
+  python -m pytest tests/integration                        # generic mode, after loading the clinic sample
 ```
 
 ### Configuration
 
-Defaults are read in [server.py](src/pg_mcp/server.py), [http_app.py](src/pg_mcp/http_app.py) and [audit.py](src/pg_mcp/audit.py). The connection defaults, libpq fallbacks and `PG_SSLMODE` are tested in [tests/test_config.py](tests/test_config.py), the byte cap default in [test_output.py `test_default_byte_cap`](tests/test_output.py).
+Defaults are read in [server.py](src/pg_mcp/server.py), [http_app.py](src/pg_mcp/http_app.py) and [audit.py](src/pg_mcp/audit.py). The connection defaults, libpq fallbacks and `PG_SSLMODE` are tested in [tests/test_config.py](tests/test_config.py), the byte cap default in [test_output.py `test_default_byte_cap`](tests/test_output.py), `PG_MCP_BOOKSTORE_TOOLS` in [tests/test_generic_mode.py](tests/test_generic_mode.py).
 
 | Variable | Default | Description |
 |---|---|---|
 | `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD` | `localhost`, `5432`, `bookstore`, `mcp_readonly`, `mcp_readonly` | Connection; the libpq names `PGHOST`, `PGPORT`, ... are used when these are unset |
+| `PG_MCP_BOOKSTORE_TOOLS` | `1` (on) | Register the bookstore demo tool `search_books`. Set `0` (also `false`, `no`, `off`) for any other database; `inspect_schema` and `query` are always registered. Any other value stops startup |
 | `PG_SSLMODE` | unset | `disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`; passed to asyncpg (`PGSSLROOTCERT` for the CA) |
 | `QUERY_ROW_LIMIT` | `100` | Max rows per `query` (hard cap 500) |
 | `QUERY_MAX_BYTES` | `200000` | Max bytes per tool response, with a truncation notice (floor 1024) |
@@ -243,6 +268,7 @@ Each key function has a `#` header (`What it does`, `Catch it`, `Card`) and one 
 | [query](docs/cards/query.md) | [src/pg_mcp/server.py](src/pg_mcp/server.py) | Blocklist, then parse, then let Postgres enforce read-only; stop reading the cursor at the cap instead of editing the agent's SQL |
 | [inspect_schema](docs/cards/inspect-schema.md) | [src/pg_mcp/server.py](src/pg_mcp/server.py) | Ask the catalog as the restricted role, so ungranted tables are invisible as well as unreadable |
 | [search_books](docs/cards/search-books.md) | [src/pg_mcp/server.py](src/pg_mcp/server.py) | Fixed SQL with placeholders only; escape LIKE wildcards; clamp the limit |
+| [build_mcp](docs/cards/build-mcp.md) | [src/pg_mcp/server.py](src/pg_mcp/server.py) | Register the schema-free tools always and the bookstore tool only behind `PG_MCP_BOOKSTORE_TOOLS`; unknown flag values stop startup |
 | [auth check](docs/cards/auth-check.md) | [src/pg_mcp/auth.py](src/pg_mcp/auth.py) | Hash the presented token, constant-time compare with every stored hash, 401 before 403 |
 | [audit writer](docs/cards/audit-writer.md) | [src/pg_mcp/audit.py](src/pg_mcp/audit.py) | Store the query's shape (literals as `?`) and a hash, never values; withhold the result if the record fails |
 

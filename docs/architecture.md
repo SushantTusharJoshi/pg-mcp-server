@@ -17,7 +17,7 @@ flowchart TB
 
     tools --> q["query(sql, params)"]
     tools --> schema["inspect_schema()<br/>fixed catalog SQL, table name bound as $1"]
-    tools --> search["search_books()<br/>fixed SQL with placeholders,<br/>LIKE wildcards escaped, limit clamped"]
+    tools --> search["search_books(), only when PG_MCP_BOOKSTORE_TOOLS is on<br/>server.py build_mcp()<br/>fixed SQL with placeholders,<br/>LIKE wildcards escaped, limit clamped"]
 
     q --> kw{"Keyword blocklist<br/>server.py BLOCKED_KEYWORDS"}
     kw -- "match" --> refuse["Refusal text<br/>server.py _Call.refuse"]
@@ -31,7 +31,7 @@ flowchart TB
     schema --> pool
     search --> pool
 
-    pg[("PostgreSQL 16, role mcp_readonly<br/>seed/init.sql: GRANT SELECT on authors, genres, books<br/>REVOKE TEMPORARY, REVOKE EXECUTE on<br/>pg_terminate_backend, pg_cancel_backend, pg_notify, ...")]
+    pg[("PostgreSQL 16, role mcp_readonly<br/>seed/init.sql: GRANT SELECT on authors, genres, books<br/>(or any database and read-only role set by PG_*)<br/>REVOKE TEMPORARY, REVOKE EXECUTE on<br/>pg_terminate_backend, pg_cancel_backend, pg_notify, ...")]
     pool --> pg
 
     pg --> fence["Untrusted-data fence + byte cap<br/>output.py untrusted_block()<br/>random block id per response"]
@@ -48,17 +48,21 @@ flowchart TB
   subgraph ci["CI: .github/workflows/ci.yml, every push to main and pull request"]
     direction TB
     lint["lint: ruff check src/ tests/"]
-    unit["test: pytest -m 'not integration'<br/>tests/test_sql_guard.py, test_server.py, test_output.py,<br/>test_audit.py, test_http_auth.py, test_query_cap.py, test_config.py"]
+    unit["test: pytest -m 'not integration'<br/>tests/test_sql_guard.py, test_server.py, test_output.py,<br/>test_audit.py, test_http_auth.py, test_query_cap.py, test_config.py,<br/>test_generic_mode.py"]
     svc[("postgres:16 service container")]
     seed["psql -f seed/init.sql"]
     integ["integration: pytest tests/integration<br/>test_containment.py runs the corpus in tests/sql_corpus.py<br/>test_privileges.py checks the GRANTs and REVOKEs"]
+    clinicseed["psql -f seed/sample_clinic.sql<br/>into a second database, clinic"]
+    generic["generic mode: PG_MCP_INTEGRATION=clinic, PG_MCP_BOOKSTORE_TOOLS=0<br/>test_generic_clinic.py: same layers on another schema,<br/>real MCP stdio client"]
     svc --> seed --> integ
+    svc --> clinicseed --> generic
   end
 ```
 
 Notes, each checked against the code:
 
 - Only `query` runs inside `BEGIN READ ONLY` with a statement timeout. `inspect_schema` and `search_books` run SQL the server wrote, with values bound as parameters, as the same `mcp_readonly` role ([server.py](../src/pg_mcp/server.py)).
+- `build_mcp` registers `inspect_schema` and `query` always and `search_books` only when `PG_MCP_BOOKSTORE_TOOLS` is on (the default). With it off, the server is generic: the same two tools and the same layers against whatever database and role `PG_*` names. CI proves this on [seed/sample_clinic.sql](../seed/sample_clinic.sql) ([test_generic_clinic.py](../tests/integration/test_generic_clinic.py)).
 - Refusals, successes and errors all go through `_Call`, so every call writes an audit record before anything is returned ([server.py](../src/pg_mcp/server.py), [audit.py](../src/pg_mcp/audit.py)). Database error messages are fenced like rows, because Postgres can quote row values in them.
 - In HTTP mode the middleware also returns `413` for a body over 1 MB and `400` for a body that is not JSON or has duplicate keys, and passes the token ID on as the audit `caller` ([auth.py](../src/pg_mcp/auth.py)). In stdio mode the caller is `stdio`.
 - Locally, [docker-compose.yml](../docker-compose.yml) runs `postgres:16-alpine` on `127.0.0.1` and loads the same `seed/init.sql`.

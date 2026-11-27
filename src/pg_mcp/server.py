@@ -18,13 +18,6 @@ from pg_mcp.sql_guard import check_sql
 
 log = logging.getLogger("pg_mcp")
 
-mcp = FastMCP(
-    "pg-mcp-server",
-    instructions="Read-only PostgreSQL tools for AI agents",
-)
-
-
-
 def _env(name: str, libpq_name: str, default: str) -> str:
     """PG_* wins, then the standard libpq variable (PGHOST, ...), then the default."""
     return os.getenv(name) or os.getenv(libpq_name) or default
@@ -51,6 +44,25 @@ def _pg_config() -> dict:
 
 
 PG_CONFIG = _pg_config()
+
+FLAG_ON = ("1", "true", "yes", "on")
+FLAG_OFF = ("0", "false", "no", "off")
+
+
+def _flag(name: str, default: bool) -> bool:
+    """An on/off environment flag; unset or empty means the default, anything unknown is an error."""
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in FLAG_ON:
+        return True
+    if raw in FLAG_OFF:
+        return False
+    raise ValueError(f"{name} must be one of {', '.join(FLAG_ON + FLAG_OFF)}")
+
+
+# On by default so the bookstore quick start keeps all three tools; set 0 for any other database
+BOOKSTORE_TOOLS = _flag("PG_MCP_BOOKSTORE_TOOLS", True)
 
 ROW_LIMIT = min(int(os.getenv("QUERY_ROW_LIMIT", "100")), 500)
 STATEMENT_TIMEOUT_MS = int(os.getenv("STATEMENT_TIMEOUT_MS", "5000"))
@@ -182,7 +194,6 @@ CONSTRAINTS_SQL = """
 # What it does: lists the tables the role can see, or describes one table's columns and constraints.
 # Catch it:     "How does an agent learn the schema without being able to read tables it should not?"
 # Card:         docs/cards/inspect-schema.md
-@mcp.tool()
 async def inspect_schema(table_name: str | None = None, ctx: Context | None = None) -> str:
     """Inspect the database schema.
 
@@ -234,7 +245,6 @@ async def inspect_schema(table_name: str | None = None, ctx: Context | None = No
 # What it does: runs one agent-written SELECT and returns at most ROW_LIMIT rows and MAX_BYTES bytes.
 # Catch it:     "How do you let an agent query a database without letting it write?"
 # Card:         docs/cards/query.md
-@mcp.tool()
 async def query(
     sql: str,
     params: list[str | int | float | bool | None] | None = None,
@@ -312,7 +322,6 @@ def _format_rows(columns: list[str], lines: list[str], truncated: str) -> str:
 # What it does: a fixed, parameterized search across title, author and genre.
 # Catch it:     "How do you take free text from an agent into SQL without injection or wildcard tricks?"
 # Card:         docs/cards/search-books.md
-@mcp.tool()
 async def search_books(
     search_term: str,
     min_rating: float | None = None,
@@ -395,6 +404,29 @@ async def search_books(
     # RETURN: fenced as untrusted data
     body = f"Found {len(rows)} result{'s' if len(rows) != 1 else ''}:\n\n" + "\n\n".join(lines)
     return call.ok(body, rows=len(rows))
+
+
+# -- build_mcp ---------------------------------------------------------------
+# What it does: builds the FastMCP server with the generic tools, plus search_books only when asked.
+# Catch it:     "How does one server work on any Postgres without exposing tools that assume one schema?"
+# Card:         docs/cards/build-mcp.md
+def build_mcp(bookstore_tools: bool) -> FastMCP:
+    """The MCP server: inspect_schema and query always, search_books only for the bookstore schema."""
+    server = FastMCP(
+        "pg-mcp-server",
+        instructions="Read-only PostgreSQL tools for AI agents",
+    )
+    # STEP: the generic tools ask the catalog and run agent SQL, so they fit any schema
+    server.add_tool(inspect_schema)
+    server.add_tool(query)
+    # DECISION: search_books names books, authors and genres -> register it only for the bookstore
+    if bookstore_tools:
+        server.add_tool(search_books)
+    # RETURN: an unregistered tool is absent from tools/list, and HTTP tokens naming it fail at startup
+    return server
+
+
+mcp = build_mcp(BOOKSTORE_TOOLS)
 
 
 async def close_pool():
