@@ -128,8 +128,9 @@ def test_new_table_is_not_readable(ungranted_table):
     seed (by its owner, with default privileges) is not readable."""
     with pytest.raises(asyncpg.InsufficientPrivilegeError):
         ro(f"SELECT * FROM {ungranted_table}")
-    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+    with pytest.raises(server.QueryError) as info:
         run(server.query, f"SELECT * FROM {ungranted_table}")
+    assert info.value.sqlstate == "42501"
     listing = run(server.inspect_schema)
     assert ungranted_table not in listing
     assert "books" in listing

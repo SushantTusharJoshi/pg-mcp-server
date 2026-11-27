@@ -83,7 +83,9 @@ def _run(sql, n_rows, monkeypatch):
 
 def test_trailing_comment_cannot_lift_the_cap(monkeypatch):
     out, conn = _run("SELECT * FROM books --", server.ROW_LIMIT * 10, monkeypatch)
-    data_lines = [ln for ln in out.split("\n")[1:] if ln and not ln.startswith("(")]
+    # drop the untrusted-data fence lines and the column header, keep the rows
+    body = [ln for ln in out.split("\n") if ln and not ln.startswith(("(", "<<<"))]
+    data_lines = body[1:]
     assert len(data_lines) == server.ROW_LIMIT
     assert f"truncated at {server.ROW_LIMIT} row limit" in out
 

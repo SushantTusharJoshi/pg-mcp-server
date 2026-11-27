@@ -25,8 +25,9 @@ pytestmark = pytest.mark.integration
 
 
 def _data_lines(out: str) -> list[str]:
-    body = out.split("\n")[1:]
-    return [ln for ln in body if ln and not ln.startswith("(")]
+    # drop the untrusted-data fence, the column header and the footer
+    body = [ln for ln in out.split("\n") if ln and not ln.startswith(("(", "<<<"))]
+    return body[1:]
 
 
 @pytest.mark.parametrize("name", sorted(REFUSED))
@@ -92,8 +93,9 @@ def test_pool_reset_clears_session_state(db_state):
 def test_pg_sleep_is_cancelled_by_statement_timeout(monkeypatch, db_state):
     monkeypatch.setattr(server, "STATEMENT_TIMEOUT_MS", 500)
     started = time.monotonic()
-    with pytest.raises(asyncpg.QueryCanceledError):
+    with pytest.raises(server.QueryError) as info:
         run(server.query, "SELECT pg_sleep(30)")
+    assert info.value.sqlstate == "57014"  # query_canceled
     assert time.monotonic() - started < 10
 
 
@@ -108,3 +110,18 @@ def test_plain_select_still_works():
     out = run(server.query, "SELECT title FROM books WHERE rating >= $1 ORDER BY title", [4.5])
     assert "Kindred" in out
     assert "One Hundred Years of Solitude" in out
+
+
+def test_audit_record_from_a_real_query(_audit_to_tmp):
+    import json
+
+    run(server.query, "SELECT title FROM books WHERE isbn = '978-0807083697' AND rating > $1", [4.0])
+    (rec,) = [json.loads(x) for x in _audit_to_tmp.read_text().splitlines()]
+    assert rec["outcome"] == "ok" and rec["rows"] == 1
+    assert "978-0807083697" not in _audit_to_tmp.read_text()
+
+
+def test_wide_rows_hit_the_byte_cap():
+    out = run(server.query, "SELECT repeat('x', 5000) AS a, repeat('y', 5000) AS b FROM generate_series(1, 100)")
+    assert len(out.encode("utf-8")) <= server.MAX_BYTES
+    assert f"truncated at {server.MAX_BYTES} byte limit" in out
