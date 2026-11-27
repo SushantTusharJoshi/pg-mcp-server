@@ -28,6 +28,7 @@ flowchart TD
 
 - An earlier version passed the term straight into ILIKE, so `%` matched everything. Now wildcards are escaped. Test: `tests/test_server.py::TestLikeEscaping`.
 - Output is now fenced and byte-capped, and each call is audited without the search term. Test: `tests/test_audit.py::test_every_tool_writes_a_record`.
+- It was always registered, even on databases without these tables. Now `build_mcp` adds it only when `PG_MCP_BOOKSTORE_TOOLS` is on (the default). Test: `tests/test_generic_mode.py::test_env_flag_off_at_import_drops_search_books`. Card: [build_mcp](build-mcp.md).
 
 ## Interviewer questions
 
