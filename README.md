@@ -2,6 +2,10 @@
 
 An MCP server that gives AI agents safe, read-only access to a PostgreSQL database. Ships with a Docker Compose setup and seed data so you can try it in under five minutes.
 
+## Architecture
+
+![pg-mcp-server architecture: an AI agent calls the MCP server, which registers schema inspection, read-only query and book search tools that use a connection pool to PostgreSQL](docs/architecture.webp)
+
 ## Tools
 
 | Tool | Purpose |
