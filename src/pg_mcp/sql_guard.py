@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.dialects.postgres import Postgres
 from sqlglot.errors import ParseError, TokenError
+from sqlglot.tokens import TokenType
 
 DIALECT = "postgres"
 
@@ -102,3 +104,67 @@ def check_sql(sql: str) -> str | None:
                 return f"function {name}() is not allowed"
 
     return None
+
+
+# -- redaction for the audit log ---------------------------------------------
+
+_LITERAL_NODES: tuple[type[exp.Expression], ...] = (
+    exp.Literal,
+    exp.Boolean,
+    exp.RawString,  # $$dollar quoted$$
+    exp.ByteString,  # E'escaped'
+    exp.UnicodeString,
+    exp.National,
+    exp.BitString,
+    exp.HexString,
+)
+
+_LITERAL_TOKENS = frozenset(
+    {
+        TokenType.STRING,
+        TokenType.NUMBER,
+        TokenType.HEREDOC_STRING,
+        TokenType.BIT_STRING,
+        TokenType.HEX_STRING,
+        TokenType.BYTE_STRING,
+        TokenType.NATIONAL_STRING,
+        TokenType.RAW_STRING,
+        TokenType.UNICODE_STRING,
+    }
+)
+
+REDACTED = "?"
+
+
+def _blank(node: exp.Expression) -> exp.Expression:
+    if isinstance(node, exp.Interval):
+        return exp.var(f"INTERVAL {REDACTED}")  # INTERVAL '1 day' carries its value in the unit too
+    # $1 is a Parameter holding the literal 1; keep placeholders as they are
+    if isinstance(node, _LITERAL_NODES) and not isinstance(node.parent, exp.Parameter):
+        return exp.var(REDACTED)
+    return node
+
+
+def _has_literal_tokens(sql: str) -> bool:
+    tokens = Postgres().tokenize(sql)
+    for prev, tok in zip([None, *tokens], tokens, strict=False):
+        if tok.token_type not in _LITERAL_TOKENS:
+            continue
+        if tok.token_type == TokenType.NUMBER and prev is not None and prev.token_type == TokenType.PARAMETER:
+            continue  # the 1 in $1
+        return True
+    return False
+
+
+def redact_sql(sql: str) -> str | None:
+    """Return the SQL with every literal replaced by ? and comments dropped,
+    or None when it cannot be parsed (the caller then stores only a hash)."""
+    try:
+        statements = [s for s in sqlglot.parse(sql, read=DIALECT) if s is not None]
+        out = "; ".join(s.transform(_blank).sql(dialect=DIALECT, comments=False) for s in statements)
+        # Belt and braces: if any literal token survived the rewrite, store nothing.
+        if _has_literal_tokens(out):
+            return None
+    except (ParseError, TokenError):
+        return None
+    return out
