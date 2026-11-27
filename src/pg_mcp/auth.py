@@ -64,10 +64,6 @@ def load_tokens(raw: str | None, known_tools: set[str]) -> list[TokenEntry]:
     return entries
 
 
-# -- auth check --------------------------------------------------------------
-# What it does: maps a presented bearer token to a token entry, or to nothing.
-# Catch it:     "How do you check an API token without leaking it through timing or logs?"
-# Card:         docs/cards/auth-check.md
 def verify_token(presented: str, entries: list[TokenEntry]) -> TokenEntry | None:
     digest = hashlib.sha256(presented.encode("utf-8")).digest()
     match = None
@@ -114,6 +110,10 @@ def _error(status: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status, headers=headers)
 
 
+# -- auth check --------------------------------------------------------------
+# What it does: lets an HTTP request through only with a known token and only to that token's tools.
+# Catch it:     "How do you check an API token without leaking it through timing or logs?"
+# Card:         docs/cards/auth-check.md
 class BearerAuthMiddleware:
     """401 without a valid token, 403 for a tool the token may not call."""
 
@@ -126,12 +126,15 @@ class BearerAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # STEP: hash the presented token and compare with every stored hash
         presented = _bearer(Headers(scope=scope))
         entry = verify_token(presented, self.entries) if presented else None
+        # DECISION: no match -> 401, and the token is never logged or echoed
         if entry is None:
             await _error(401, "missing or invalid bearer token")(scope, receive, send)
             return
 
+        # LOOP: buffer the body (capped) so the tool names can be read before the app sees it
         body = b""
         if scope.get("method") == "POST":
             more = True
@@ -148,11 +151,13 @@ class BearerAuthMiddleware:
             if tools is None:
                 await _error(400, "request body must be JSON without duplicate keys")(scope, receive, send)
                 return
+            # DECISION: any tools/call outside the token's list -> 403
             denied = sorted({t for t in tools if t not in entry.tools})
             if denied:
                 await _error(403, f"token {entry.token_id!r} may not call {', '.join(denied)}")(scope, receive, send)
                 return
 
+        # RETURN: pass the request on with the token ID for the audit record
         scope.setdefault("state", {})[STATE_KEY] = entry.token_id
         replayed = False
 

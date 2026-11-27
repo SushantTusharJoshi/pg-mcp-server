@@ -8,6 +8,8 @@ agent a clear reason.
 
 from __future__ import annotations
 
+import logging
+
 import sqlglot
 from sqlglot import exp
 from sqlglot.dialects.postgres import Postgres
@@ -15,6 +17,9 @@ from sqlglot.errors import ParseError, TokenError
 from sqlglot.tokens import TokenType
 
 DIALECT = "postgres"
+
+# sqlglot logs parser notes (for example "falling back to Command") that add noise, not signal
+logging.getLogger("sqlglot").setLevel(logging.ERROR)
 
 # Node types that write, change the schema, or are statements sqlglot could not
 # model (it falls back to exp.Command for those, so refusing Command fails closed).

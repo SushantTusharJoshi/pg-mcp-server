@@ -38,15 +38,18 @@ def build_record(
     caller: str,
     sqlstate: str | None = None,
 ) -> dict:
+    # STEP: who, what and when
     record: dict = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         "tool": tool,
         "caller": caller,
         "outcome": outcome,
     }
+    # DECISION: no SQL for this call -> nothing to redact
     if sql is None:
         record.update(sql=None, sql_sha256=None, sql_unparsed=False)
     else:
+        # STEP: sqlglot replaces every literal with ?, drops comments; None if it cannot parse
         normalized = redact_sql(sql)
         record.update(
             sql=normalized,
@@ -61,6 +64,7 @@ def build_record(
     )
     if sqlstate:
         record["sqlstate"] = sqlstate
+    # RETURN: counts and codes only; the server withholds the result if write() fails
     return record
 
 
@@ -76,6 +80,7 @@ class AuditLog:
         return self._path or audit_path()
 
     def write(self, record: dict) -> None:
+        # STEP: one line, appended, file created 0600
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
         with self._lock:
             fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)

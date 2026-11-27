@@ -178,6 +178,10 @@ CONSTRAINTS_SQL = """
 """
 
 
+# -- inspect_schema ----------------------------------------------------------
+# What it does: lists the tables the role can see, or describes one table's columns and constraints.
+# Catch it:     "How does an agent learn the schema without being able to read tables it should not?"
+# Card:         docs/cards/inspect-schema.md
 @mcp.tool()
 async def inspect_schema(table_name: str | None = None, ctx: Context | None = None) -> str:
     """Inspect the database schema.
@@ -188,8 +192,10 @@ async def inspect_schema(table_name: str | None = None, ctx: Context | None = No
     """
     call = _Call("inspect_schema", TABLES_SQL if table_name is None else COLUMNS_SQL, int(table_name is not None), ctx)
     try:
+        # STEP: catalog queries the server wrote; the table name is only ever a bound $1
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # DECISION: no table name -> list tables (information_schema hides ungranted ones)
             if table_name is None:
                 rows = await conn.fetch(TABLES_SQL)
                 lines = ["Tables in database:\n"]
@@ -198,12 +204,14 @@ async def inspect_schema(table_name: str | None = None, ctx: Context | None = No
                 return call.ok("\n".join(lines), rows=len(rows))
 
             cols = await conn.fetch(COLUMNS_SQL, table_name)
+            # DECISION: no visible columns -> same answer for missing and ungranted tables
             if not cols:
                 return call.ok(f"Table '{table_name}' not found.", rows=0, from_db=False)
             constraints = await conn.fetch(CONSTRAINTS_SQL, table_name)
     except Exception as exc:
         call.fail(exc)
 
+    # LOOP: one line per column, then one per constraint
     lines = [f"Table: {table_name}\n", "Columns:"]
     for c in cols:
         nullable = "NULL" if c["is_nullable"] == "YES" else "NOT NULL"
@@ -218,11 +226,12 @@ async def inspect_schema(table_name: str | None = None, ctx: Context | None = No
                 detail += f" -> {c['foreign_table']}({c['foreign_column']})"
             lines.append(f"  {c['column_name']}: {detail} ({c['constraint_name']})")
 
+    # RETURN: fenced as untrusted data (names and defaults come from the database)
     return call.ok("\n".join(lines), rows=len(cols))
 
 
 # -- query -------------------------------------------------------------------
-# What it does: runs one agent-written SELECT and returns at most ROW_LIMIT rows.
+# What it does: runs one agent-written SELECT and returns at most ROW_LIMIT rows and MAX_BYTES bytes.
 # Catch it:     "How do you let an agent query a database without letting it write?"
 # Card:         docs/cards/query.md
 @mcp.tool()
@@ -299,6 +308,10 @@ def _format_rows(columns: list[str], lines: list[str], truncated: str) -> str:
     return "\n".join(["\t".join(columns), *lines, footer])
 
 
+# -- search_books ------------------------------------------------------------
+# What it does: a fixed, parameterized search across title, author and genre.
+# Catch it:     "How do you take free text from an agent into SQL without injection or wildcard tricks?"
+# Card:         docs/cards/search-books.md
 @mcp.tool()
 async def search_books(
     search_term: str,
@@ -319,6 +332,7 @@ async def search_books(
         in_stock: Optional filter for stock availability.
         limit: Maximum number of results (default 10, max 50).
     """
+    # STEP: clamp the limit and escape LIKE wildcards so % and _ match literally
     limit = min(max(1, limit), 50)
     escaped = search_term.replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{escaped}%"
@@ -329,6 +343,7 @@ async def search_books(
     params: list[str | float | bool] = [pattern]
     idx = 2
 
+    # DECISION: each optional filter adds a placeholder, never a value, to the SQL text
     if min_rating is not None:
         conditions.append(f"b.rating >= ${idx}")
         params.append(min_rating)
@@ -354,6 +369,7 @@ async def search_books(
     """
     params.append(limit)
 
+    # STEP: values travel as bind parameters
     call = _Call("search_books", sql, len(params), ctx)
     try:
         pool = await get_pool()
@@ -365,6 +381,7 @@ async def search_books(
     if not rows:
         return call.ok(f"No books found matching '{search_term}'.", rows=0, from_db=False)
 
+    # LOOP: one readable block per book
     lines = []
     for r in rows:
         stock = "In stock" if r["in_stock"] else "Out of stock"
@@ -375,6 +392,7 @@ async def search_books(
             f"  ISBN: {r['isbn']}"
         )
 
+    # RETURN: fenced as untrusted data
     body = f"Found {len(rows)} result{'s' if len(rows) != 1 else ''}:\n\n" + "\n\n".join(lines)
     return call.ok(body, rows=len(rows))
 
