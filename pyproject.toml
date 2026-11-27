@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "MCP server exposing PostgreSQL as agent-callable tools"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp[cli]>=1.0.0,<2",
+    "mcp[cli]>=1.30.0,<2",
     "asyncpg>=0.30.0",
     "sqlglot>=30.0,<31",
 ]
