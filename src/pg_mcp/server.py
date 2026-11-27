@@ -8,6 +8,8 @@ import re
 import asyncpg
 from mcp.server.fastmcp import FastMCP
 
+from pg_mcp.sql_guard import check_sql
+
 mcp = FastMCP(
     "pg-mcp-server",
     instructions="Read-only PostgreSQL tools for AI agents",
@@ -122,9 +124,10 @@ async def inspect_schema(table_name: str | None = None) -> str:
 async def query(sql: str, params: list[str | int | float | bool | None] | None = None) -> str:
     """Execute a read-only SQL query against the database.
 
-    Safety: the query runs inside a READ ONLY transaction with a
-    statement timeout. DDL and DML keywords are rejected. Results
-    are capped at the configured row limit.
+    Safety: the query must parse as exactly one SELECT (or WITH ... SELECT)
+    and runs inside a READ ONLY transaction with a statement timeout.
+    DDL and DML keywords are rejected. Results are capped at the
+    configured row limit.
 
     Args:
         sql: A SELECT query. Must not contain INSERT, UPDATE, DELETE,
@@ -135,6 +138,11 @@ async def query(sql: str, params: list[str | int | float | bool | None] | None =
     # DECISION: a write keyword anywhere -> refuse before touching the database
     if BLOCKED_KEYWORDS.search(sql):
         return "Error: only SELECT queries are allowed. DDL/DML statements are blocked."
+
+    # DECISION: the parser must see exactly one SELECT with no writes inside
+    reason = check_sql(sql)
+    if reason is not None:
+        return f"Error: query refused: {reason}."
 
     pool = await get_pool()
     async with pool.acquire() as conn:

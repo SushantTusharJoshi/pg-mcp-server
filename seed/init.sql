@@ -87,8 +87,15 @@ INSERT INTO books (title, author_id, genre_id, published_year, isbn, pages, pric
 CREATE ROLE mcp_readonly WITH LOGIN PASSWORD 'mcp_readonly';
 GRANT CONNECT ON DATABASE bookstore TO mcp_readonly;
 GRANT USAGE ON SCHEMA public TO mcp_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_readonly;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO mcp_readonly;
+
+-- Table allowlist, enforced by the database: SELECT on these three tables only.
+-- There is deliberately no GRANT ... ON ALL TABLES and no ALTER DEFAULT PRIVILEGES,
+-- so a table added later stays unreadable until someone grants it by name.
+-- Sequences are not granted either, so currval/nextval/setval are denied.
+GRANT SELECT ON TABLE authors, genres, books TO mcp_readonly;
+
+-- PUBLIC can create temporary tables by default; the server never needs them.
+REVOKE TEMPORARY ON DATABASE bookstore FROM PUBLIC;
 
 -- Read-only is a property of the role, so close the side channels too.
 -- Without these, mcp_readonly could end other sessions of the same role
@@ -97,5 +104,20 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO mcp_readonly
 REVOKE EXECUTE ON FUNCTION pg_catalog.pg_terminate_backend(integer, bigint) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION pg_catalog.pg_cancel_backend(integer) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION pg_catalog.pg_notify(text, text) FROM PUBLIC;
+
+-- pg_logical_emit_message writes a message into the WAL and works inside a
+-- read-only transaction. Revoke every overload (the argument list differs
+-- between Postgres versions).
+DO $$
+DECLARE f regprocedure;
+BEGIN
+    FOR f IN SELECT p.oid::regprocedure FROM pg_proc p
+             WHERE p.proname = 'pg_logical_emit_message'
+               AND p.pronamespace = 'pg_catalog'::regnamespace
+    LOOP
+        EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f);
+    END LOOP;
+END
+$$;
 
 COMMIT;
