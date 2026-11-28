@@ -136,6 +136,34 @@ def test_ungranted_table_looks_missing():
     assert "not found" in run(server.inspect_schema, "billing_notes")
 
 
+def test_information_schema_hides_constraints_from_a_select_only_role():
+    """Why CONSTRAINTS_SQL reads pg_catalog: table_constraints is empty here."""
+    assert ro("SELECT count(*) FROM information_schema.table_constraints WHERE table_schema = 'public'")[0][0] == 0
+
+
+def test_inspect_schema_shows_constraints_to_the_read_only_role():
+    out = run(server.inspect_schema, "appointments")
+    assert "Constraints:" in out
+    assert "id: PRIMARY KEY (appointments_pkey)" in out
+    assert "patient_id: FOREIGN KEY -> patients(id) (appointments_patient_id_fkey)" in out
+    assert "clinician_id: FOREIGN KEY -> clinicians(id) (appointments_clinician_id_fkey)" in out
+    assert "status: CHECK (" in out and "'scheduled'::text" in out
+
+    patients = run(server.inspect_schema, "patients")
+    assert "patient_code: UNIQUE (patients_patient_code_key)" in patients
+    assert "birth_year: CHECK (" in patients
+
+
+def test_constraints_of_an_ungranted_table_stay_hidden():
+    """The has_table_privilege filter alone hides billing_notes, even if the
+    columns check in inspect_schema were skipped."""
+    assert admin("SELECT count(*) FROM pg_constraint WHERE conrelid = 'billing_notes'::regclass")[0][0] >= 2
+    assert ro(server.CONSTRAINTS_SQL, "billing_notes") == []
+    out = run(server.inspect_schema, "billing_notes")
+    assert "not found" in out
+    assert "billing_notes_pkey" not in out and "FOREIGN KEY" not in out
+
+
 def test_query_joins_with_bound_params():
     out = run(
         server.query,
