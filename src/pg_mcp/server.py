@@ -174,19 +174,36 @@ COLUMNS_SQL = """
     ORDER BY ordinal_position
 """
 
+# pg_catalog, not information_schema: information_schema.table_constraints only
+# lists tables where the role holds a privilege beyond SELECT, so a SELECT-only
+# role saw no constraints at all. has_table_privilege keeps the visibility rule
+# of COLUMNS_SQL: a table the role cannot SELECT describes nothing.
+# One row per key column; a foreign key column pairs with the referenced column
+# at the same position. CHECK rows carry the definition from pg_get_constraintdef.
 CONSTRAINTS_SQL = """
-    SELECT tc.constraint_name, tc.constraint_type,
-           kcu.column_name,
-           ccu.table_name AS foreign_table,
-           ccu.column_name AS foreign_column
-    FROM information_schema.table_constraints tc
-    JOIN information_schema.key_column_usage kcu
-      ON tc.constraint_name = kcu.constraint_name
-    LEFT JOIN information_schema.constraint_column_usage ccu
-      ON tc.constraint_name = ccu.constraint_name
-      AND tc.constraint_type = 'FOREIGN KEY'
-    WHERE tc.table_schema = 'public' AND tc.table_name = $1
-    ORDER BY tc.constraint_type, kcu.column_name
+    SELECT con.conname AS constraint_name,
+           CASE con.contype
+             WHEN 'p' THEN 'PRIMARY KEY'
+             WHEN 'f' THEN 'FOREIGN KEY'
+             WHEN 'u' THEN 'UNIQUE'
+             WHEN 'c' THEN 'CHECK'
+           END AS constraint_type,
+           a.attname AS column_name,
+           ft.relname AS foreign_table,
+           fa.attname AS foreign_column,
+           CASE WHEN con.contype = 'c' THEN pg_catalog.pg_get_constraintdef(con.oid) END AS check_clause
+    FROM pg_catalog.pg_constraint con
+    JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, pos)
+    JOIN pg_catalog.pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum
+    LEFT JOIN pg_catalog.pg_class ft ON ft.oid = con.confrelid
+    LEFT JOIN pg_catalog.pg_attribute fa
+      ON fa.attrelid = con.confrelid AND fa.attnum = con.confkey[k.pos]
+    WHERE n.nspname = 'public' AND c.relname = $1
+      AND con.contype IN ('p', 'f', 'u', 'c')
+      AND pg_catalog.has_table_privilege(c.oid, 'SELECT')
+    ORDER BY constraint_type, a.attname, con.conname
 """
 
 
@@ -232,7 +249,7 @@ async def inspect_schema(table_name: str | None = None, ctx: Context | None = No
     if constraints:
         lines.append("\nConstraints:")
         for c in constraints:
-            detail = c["constraint_type"]
+            detail = c.get("check_clause") or c["constraint_type"]
             if c["foreign_table"]:
                 detail += f" -> {c['foreign_table']}({c['foreign_column']})"
             lines.append(f"  {c['column_name']}: {detail} ({c['constraint_name']})")

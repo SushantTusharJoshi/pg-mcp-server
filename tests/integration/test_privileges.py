@@ -136,6 +136,43 @@ def test_new_table_is_not_readable(ungranted_table):
     assert "books" in listing
 
 
+def test_information_schema_hides_constraints_from_a_select_only_role():
+    """Why CONSTRAINTS_SQL reads pg_catalog: table_constraints is empty here."""
+    assert ro("SELECT count(*) FROM information_schema.table_constraints WHERE table_schema = 'public'")[0][0] == 0
+
+
+def test_inspect_schema_shows_constraints_to_the_read_only_role():
+    out = run(server.inspect_schema, "books")
+    assert "Constraints:" in out
+    assert "id: PRIMARY KEY (books_pkey)" in out
+    assert "author_id: FOREIGN KEY -> authors(id) (books_author_id_fkey)" in out
+    assert "genre_id: FOREIGN KEY -> genres(id) (books_genre_id_fkey)" in out
+    assert "isbn: UNIQUE (books_isbn_key)" in out
+    assert "rating: CHECK (" in out
+
+    genres = run(server.inspect_schema, "genres")
+    assert "name: UNIQUE (genres_name_key)" in genres
+
+
+@pytest.fixture
+def ungranted_table_with_constraints():
+    admin("DROP TABLE IF EXISTS staff_payroll")
+    admin(
+        "CREATE TABLE staff_payroll (id serial PRIMARY KEY, author_id int REFERENCES authors(id), "
+        "salary int CHECK (salary > 0))"
+    )
+    yield "staff_payroll"
+    admin("DROP TABLE IF EXISTS staff_payroll")
+
+
+def test_constraints_of_an_ungranted_table_stay_hidden(ungranted_table_with_constraints):
+    name = ungranted_table_with_constraints
+    assert ro(server.CONSTRAINTS_SQL, name) == []
+    out = run(server.inspect_schema, name)
+    assert "not found" in out
+    assert f"{name}_pkey" not in out and "FOREIGN KEY" not in out
+
+
 def test_readable_tables_are_exactly_the_allowlist():
     rows = ro(
         "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "

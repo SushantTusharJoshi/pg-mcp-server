@@ -8,7 +8,7 @@ Code: `inspect_schema` in [`src/pg_mcp/server.py`](../../src/pg_mcp/server.py)
 
 ## How to catch it
 
-Ask the catalog as the same restricted role. `information_schema` only shows objects the current role has some privilege on, so the allowlist in the database also decides what the agent can discover. The table name the agent passes is a bound parameter, never part of the SQL text.
+Ask the catalog as the same restricted role. `information_schema` only shows objects the current role has some privilege on, so the allowlist in the database also decides what the agent can discover. Constraints are the exception: `information_schema.table_constraints` hides tables where the role holds only SELECT, so they come from `pg_catalog.pg_constraint`, filtered with `has_table_privilege(..., 'SELECT')` to keep the same rule. The table name the agent passes is a bound parameter, never part of the SQL text.
 
 ## Flowchart
 
