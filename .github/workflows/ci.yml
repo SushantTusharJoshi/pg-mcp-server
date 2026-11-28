@@ -67,24 +67,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.10"
-      - name: Load seed/init.sql
-        env:
-          PGPASSWORD: postgres
-        run: psql -h localhost -U postgres -d bookstore -v ON_ERROR_STOP=1 -f seed/init.sql
-      - name: Load seed/sample_clinic.sql into a second database
-        env:
-          PGPASSWORD: postgres
-        run: |
-          psql -h localhost -U postgres -d bookstore -v ON_ERROR_STOP=1 -c "CREATE DATABASE clinic"
-          psql -h localhost -U postgres -d clinic -v ON_ERROR_STOP=1 -f seed/sample_clinic.sql
       - run: pip install -e . pytest
-      - run: python -m pytest tests/integration -v -m integration
-      - name: Generic mode on the clinic schema (PG-F6)
-        env:
-          PG_MCP_INTEGRATION: clinic
-          PG_MCP_BOOKSTORE_TOOLS: "0"
-          PG_DATABASE: clinic
-          PG_USER: clinic_readonly
-          PG_PASSWORD: clinic_readonly
-          PG_ADMIN_DSN: postgresql://postgres:postgres@localhost:5432/clinic
-        run: python -m pytest tests/integration -v -m integration
+      # Seeds both sample databases and runs both integration suites; the
+      # nightly security-drift.yml runs the same script on other images.
+      - run: scripts/run_integration.sh

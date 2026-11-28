@@ -141,6 +141,10 @@ The SQL containment corpus ([tests/sql_corpus.py](tests/sql_corpus.py)) runs in 
 
 Residual risks, in short: the agent can read every row of the granted tables; the fence is a label, not enforcement; one huge value is built in memory before the byte cap trims it; there is no rate limit; HTTP tokens are static; in stdio mode the only identity is the local OS user; Amazon RDS is untested. The full threat model, the Nov 4 audit findings and their status, and how to report a vulnerability are in [SECURITY.md](SECURITY.md).
 
+### Monitoring
+
+The integration suites also run nightly at 06:00 UTC (and on demand) against `postgres:16` and `postgres:latest`, pulled fresh each time ([security-drift.yml](.github/workflows/security-drift.yml)). This catches a security regression from outside the repository, such as a new minor or major image or a changed default privilege. Both workflows call the same [scripts/run_integration.sh](scripts/run_integration.sh), so the checks cannot diverge. Each run writes a job summary with the server version and image digest. Any failure opens or updates one issue labelled `drift`, titled "Security drift detected", naming the image; a failure on `postgres:latest` alone is marked as a new major version. A clean run comments on that issue if it is open.
+
 ## Modes
 
 ### stdio (default)
